@@ -1,0 +1,56 @@
+# show the time the ioc was last updated to give an idea of how recent the reports are
+
+some notable queries
+
+# list all iocs that were paired with 8.8.8.8 at least once in the logs
+select iocs.value from iocs_bonds inner join iocs on ((ioc1=value and ioc2='8.8.8.8') or (ioc2=value and ioc1='8.8.8.8'));
+
+# order logs by occurrencies
+
+# list iocs that are have the $TAG tag
+
+
+# FIX THIS (Unique IOCs)
+SELECT "value", "tags"
+FROM 
+(SELECT count(*) as "events", "iocs"."value" AS "value", "iocs"."tags" AS "tags"
+FROM "iocs" INNER JOIN "iocs_context" "Iocs Context" ON "iocs"."value" = "Iocs Context"."ioc"
+[[WHERE "iocs"."type" = {{ioc_type}}]]
+GROUP BY "iocs"."value"
+ORDER BY "events" DESC)
+WHERE "events" = 1
+LIMIT 1048575
+
+
+SELECT count(*) as "events", "iocs"."value" AS "value", "iocs_taggings"."tag" AS "tag"
+FROM ("iocs" INNER JOIN "iocs_context" "Iocs Context" ON "iocs"."value" = "Iocs Context"."ioc") INNER JOIN "iocs_taggings" on "iocs"."value" = "iocs_taggings"."ioc"
+[[WHERE "iocs"."type" = {{ioc_type}}]]
+GROUP BY "iocs"."value"
+ORDER BY "events" DESC
+LIMIT 50
+
+SELECT "iocs"."value", GROUP_CONCAT("iocs_taggings"."tag", ' ') AS "tags"
+    FROM "iocs" INNER JOIN "iocs_taggings" on "iocs"."value" = "iocs_taggings"."ioc" 
+    GROUP BY "iocs"."value"
+
+
+# IOC DATABASE
+Change IOC value filter in metabase to pattern matching instead of exact matching
+
+# WEAK SPOTS DATABASE
+A 'basic' table with timestamp, hostname, ip, port. It is a main reference 
+A 'web' table containing technologies and web oriented specific intel
+A 'vulns' table containing nmap/nuclei vulnerabilities
+
+# offense
+naabu -r 192.168.3.254 -l targets.txt -sn -nmap-cli 'nmap --dns-servers 192.168.3.254 -oX nmap.xml -vv -sV --script vulners' > naabu.txt
+dnsx -r 192.168.3.254 -l targets.txt -resp-only -silent | sort | uniq
+
+# some ideas
+keep domain names and ips separated
+domain names and ips have a multi-multi relationship
+use domain names to filter with dnsx and scan for web
+use ips for lower level network service mapping
+
+
+Draw diagram of docker compose structure

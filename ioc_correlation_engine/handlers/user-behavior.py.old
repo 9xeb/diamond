@@ -1,0 +1,196 @@
+#!/usr/bin/python3.8
+
+#os.environ['CORTEX_APP_URL']
+from hashlib import new
+import os
+import sys
+import json
+from datetime import datetime
+import redis
+import time
+import statistics
+
+class BehaviorMemory:
+    def __init__(self, burst_duration=5, timestamp_format="%b %d %H:%M:%S", behaviors={}, redis_hostname="localhost", redis_port="6379", redis_pwd=""):
+        # BehaviorMemory is divided into chucks. Each chunk is N seconds of behavior recording. They are stored in a redis database.
+        # Chunks should be big enough to contain anomalous bursts and small enough to be stored in large quantities (several weeks or months)
+        # Single chunks can be used for anomalous burst detection, and groups of chunks are gathered for comparative anomaly analysis.
+        self.behaviors_chunk = behaviors
+        self.checkpoint = None
+        self.burst_duration = burst_duration
+
+        self.timestamp_format = timestamp_format
+        self.last_behavior_time = None
+        self.burst_time_delta = None
+
+        self.redis = redis.Redis(redis_hostname, redis_port, redis_pwd)
+        self.next_chunk_key_prefix = "user-behavior"
+
+        self.recent_behaviors = {}
+
+    def update_behavior(self, new_behavior):
+        try:
+            if new_behavior["host"] not in self.behaviors_chunk:
+                # host was never seen before
+                self.behaviors_chunk[new_behavior["host"]] = {}
+            if new_behavior["user"] not in self.behaviors_chunk[new_behavior["host"]]:
+                # user in host was never seen before
+                self.behaviors_chunk[new_behavior["host"]][new_behavior["user"]] = []                  
+            self.behaviors_chunk[new_behavior["host"]][new_behavior["user"]].append(new_behavior["key"])
+            #print("[BehaviorMemory] Memory dump: %s" % json.dumps(self.recorded_behaviors, indent=4), file=sys.stderr, flush=True)
+
+            next_behavior_time = datetime.strptime(new_behavior["timestamp"], self.timestamp_format) # convert declared timestamp string into a usable format
+
+            # Decide if checkpoint is reached and memory is to flush
+            if self.checkpoint is not None:
+                if int ((next_behavior_time - self.checkpoint).total_seconds()) > self.chunck_duration:
+                    # shortfall: requires an out-of-memory-duration-time new_behavior to trigger a memory flush
+                    # advantage: very simple to implement, no "timer thread" with synchronization required
+                    self.flush_memory()
+                    self.checkpoint = next_behavior_time
+            else:
+                self.checkpoint = next_behavior_time
+            
+        except Exception as e:
+            print("[BehaviorMemoryChunkException] %s" % e, file=sys.stderr, flush=True)
+
+    def flush_memory(self):
+        # TODO: perform compared analysis between daily patterns of previous days and latest pattern
+        # spot anomalous behavior and cluster similar daily patterns
+        # timestamps are as important as behavior sequences
+        # this kind of analysis can spot if today "bob" logged in at 3:00 AM although he usually logs in at 8:00 AM
+        # this kind of analysis can spot if "alice" tried to mess with SSL certificates despite never having done so in the last year
+        try:
+            print(json.dumps(self.behaviors_chunk), flush=True)   # send back to scheduler
+            timeid = int(time.time())
+            self.redis.set("%s%s" % (self.next_chunk_key_prefix, timeid), json.dumps(self.behaviors_chunk)) # save ("user-behavior-N", behaviors_chunk) to redis
+            print("[user-behavior] Saved chunk to redis! (%s%s)" % (self.next_chunk_key_prefix, timeid), file=sys.stderr, flush=True)
+            self.behaviors_chunk.clear()
+        except Exception as e:
+            print("[BehaviorMemoryFlushException] %s" % e, file=sys.stderr, flush=True)
+
+    def comparative_analysis(self):
+        tot = {}
+        for chunk_key in self.redis.keys(pattern="%s*" % self.next_chunk_key_prefix):
+            chunk = self.redis.get(chunk_key)
+            for host in chunk.keys():
+                local_tot = 0
+                for user_key in chunk[host].keys():
+                    if tot[(host,user_key)] is None:
+                        tot[(host,user_key)] = []
+                    tot[(host,user_key)].append(len(chunk[host][user_key]))
+    
+    def update_counter(self, observable):
+        try:
+            redis_key = "%s:%s" % (observable["actor"],observable["tag"])
+            redis_record = self.redis.get(redis_key)
+            if redis_record is None:
+                self.redis.set(redis_key, 1)
+            else:
+                self.redis.set(redis_key, redis_record + 1)
+        except Exception as e:
+            print("[BehaviorAnalysisException] %s" % e, file=sys.stderr, flush=True)
+    
+    def update_memory(self, new_behavior):
+        try:
+            expected_key = "%s:%s:%s:counter" % (self.next_chunk_key_prefix, new_behavior["host"], new_behavior["user"])
+            redis_record = self.redis.get(expected_key)
+
+            # Keep track of user behaviors in a host by number of events on the same type
+            # This helps to spot outliers
+            if redis_record is None:
+                self.redis.set(expected_key, json.dumps({new_behavior["key"] : 1}))
+            else:
+                behavior_dict = json.loads(redis_record)
+                if new_behavior["key"] not in behavior_dict.keys():
+                    behavior_dict.update({new_behavior["key"]: 1})
+                else:
+                    behavior_dict[new_behavior["key"]] += 1
+                self.redis.set(expected_key, json.dumps(behavior_dict))
+
+                # Rare events together make up for the 5% of all events (Gaussian formula, outliers)
+                behavior_sorted = dict(sorted(behavior_dict.items(),key= lambda x:x[1]))
+                behavior_rare = {}  # this will contain the least frequent events up to a total of 5% of all events
+                tot = sum((behavior_sorted[key] for key in behavior_sorted.keys()))
+                acc = 0
+                for key in behavior_sorted.keys():
+                    acc += behavior_sorted[key]
+                    if acc > tot * 0.05:
+                        break
+                    behavior_rare.update({key: behavior_sorted[key]})
+                rare_key = "%s:%s:%s:%s" % (self.next_chunk_key_prefix, new_behavior["host"], new_behavior["user"], "rare")
+                self.redis.set(rare_key, json.dumps(behavior_rare))
+                #print("[BehaviorAnalysis] Updated %s in redis!" % rare_key, file=sys.stderr, flush=True)
+            print("[user-behavior] Updated %s in redis!" % expected_key, file=sys.stderr, flush=True)
+        except Exception as e:
+            print("[BehaviorAnalysisException] %s" % e, file=sys.stderr, flush=True)
+
+
+    def roll_bursts(self, new_behavior):
+        try:
+            # Add current behavior to recent behaviors
+            if new_behavior["host"] not in self.recent_behaviors.keys():
+                self.recent_behaviors.update({new_behavior["host"]: {}})
+            if new_behavior["user"] not in self.recent_behaviors[new_behavior["host"]].keys():
+                self.recent_behaviors[new_behavior["host"]].update({new_behavior["user"] : []})
+            # Update local copy of bursts with new addition, before rolling it
+            self.recent_behaviors[new_behavior["host"]][new_behavior["user"]].append((new_behavior["timestamp"],new_behavior["key"]))   # append (timestamp,key)
+
+
+            # Roll recent behaviors so that all recent behaviors of that (host,user) that happened more than N seconds before the current behavior are removed
+            # This effectively ensures that recent behaviors are rolled so that they are all within a certain time span
+            behavior_time = datetime.strptime(new_behavior["timestamp"], self.timestamp_format) # convert declared timestamp string into a usable format
+            for recent_host_key in self.recent_behaviors.keys():
+                for recent_user_key in self.recent_behaviors[recent_host_key].keys():
+                    # rolling is applied only to behaviors linked to the same (host,user) as the current behavior
+                    if recent_host_key == new_behavior["host"] and recent_user_key == new_behavior["user"]:
+                        # behavior is a tuple: (timestamp, key)
+                        # generating a new list is necessary because we must modify a list we are scrolling
+                        # this new list contains behaviors not older than 5 seconds before the last behavior
+                        new_behaviors_linked_to_host_user = [
+                            behavior
+                            for behavior in self.recent_behaviors[recent_host_key][recent_user_key]
+                            if int((behavior_time - datetime.strptime(behavior[0], self.timestamp_format)).total_seconds()) <= self.burst_duration
+                        ]
+                        # Override recent behaviors with rolled ones
+                        # recent_behaviors memorizes timestamps too
+                        self.recent_behaviors[recent_host_key][recent_user_key] = new_behaviors_linked_to_host_user
+
+                        burst_key = "%s:%s:%s:bursts" % (self.next_chunk_key_prefix, new_behavior["host"], new_behavior["user"])
+                        known_bursts_json = self.redis.get(burst_key)
+                        known_bursts = [] if known_bursts_json is None else json.loads(known_bursts_json)
+
+                        # Check if current burst is already known
+                        recent_behaviors_tags_only = [record[1] for record in self.recent_behaviors[recent_host_key][recent_user_key]]
+                        for burst in known_bursts:
+                            if burst == recent_behaviors_tags_only:
+                                print("[BehaviorAnalysis] Burst is known!", file=sys.stderr, flush=True)
+                                return
+                        # current burst is not known, add it to the list of known bursts before pushing back to redis
+                        # known_bursts memorize time ordered tags only (no timestamps), hence the [1] index
+                        known_bursts.append([behavior[1] for behavior in self.recent_behaviors[recent_host_key][recent_user_key]])
+                        self.redis.set(burst_key, json.dumps(known_bursts))
+                        print("[BehaviorAnalysis] Burst was added to (%s,%s)" % (new_behavior["host"], new_behavior["user"]), file=sys.stderr, flush=True)
+            # Archive current recent behavior snapshot
+            # Do not duplicate known burst patterns
+
+            # Rare bursts together make up for the 5% of all events (Gaussian formula, outliers)
+
+            #print(json.dumps(self.recent_behaviors, indent=4), file=sys.stderr, flush=True)
+            return
+        except Exception as e:
+            print("[BehaviorAnalysisException] %s" % e, file=sys.stderr, flush=True)
+       
+        print(json.dumps(new_behavior)) # print behavior to stdout so the scheduler can archive it
+
+
+try:
+    bm = BehaviorMemory(redis_hostname=os.environ['REDIS_HOSTNAME'])
+    print("[behavior-analytics] Behavior memory initialized", file=sys.stderr, flush=True)
+    for behavior in sys.stdin:
+        new_behavior = json.loads(behavior.rstrip())
+        bm.update_memory(new_behavior)
+        #print(json.dumps(new_behavior), flush=True)
+except Exception as e:
+    print("[BehaviorMemoryException] %s" % e, file=sys.stderr, flush=True)
+
