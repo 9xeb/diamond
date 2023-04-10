@@ -30,10 +30,10 @@ RUN useradd -ms /bin/bash threatintel && chmod +x /setup-crowdsec.sh && chmod +x
 #CMD /setup-crowdsec.sh && python3 ./elastic_to_threatintel.py | tee -a /threatintel/data/alerts.log | /push-to-crowdsec.sh
 
 # SIGMA files
-COPY ./sigma_engine/generate_sigma_rules.sh /threatintel/generate_sigma_rules.sh
-COPY ./sigma_engine/sigma_engine.py /threatintel/sigma_engine.py
-COPY ./sigma_engine/nsm_and_web.yml /threatintel/nsm_and_web.yml
-COPY ./sigma_engine/linux_auditd.yml /threatintel/linux_auditd.yml
+#COPY ./sigma_engine/generate_sigma_rules.sh /threatintel/generate_sigma_rules.sh
+#COPY ./sigma_engine/sigma_engine.py /threatintel/sigma_engine.py
+#COPY ./sigma_engine/nsm_and_web.yml /threatintel/nsm_and_web.yml
+#COPY ./sigma_engine/linux_auditd.yml /threatintel/linux_auditd.yml
 
 
 ENTRYPOINT ["/bin/bash", "/docker-entrypoint.sh"]
