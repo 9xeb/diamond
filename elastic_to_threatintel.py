@@ -15,7 +15,7 @@ from elasticsearch.helpers import scan
 import time
 import json
 import ioc_correlation_engine
-import sigma_engine
+#import sigma_engine
 #import sigma_engine
 from datetime import datetime, timedelta
 import hashlib
