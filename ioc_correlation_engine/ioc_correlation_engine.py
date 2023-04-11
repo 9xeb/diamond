@@ -74,6 +74,7 @@ class IocCorrelationEngine():
         # Default warning lists
         #self.warninglists = WarningLists(slow_search=True)
         self.ioc_cache = []
+        self.diamond_cache = []
         self.ioc_cache_ttl = 600
         self.diamond_cache_ttl = 86400
 
