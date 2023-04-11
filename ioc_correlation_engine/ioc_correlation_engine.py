@@ -249,7 +249,7 @@ class IocCorrelationEngine():
             externals = ['']  if len(externals) == 0 else externals
             internals = ['']  if len(internals) == 0 else internals
             vectors = ['']  if len(vectors) == 0 else vectors
-            with open(self.diamond_filename, "wa") as logfile, self.db_lock:
+            with open(self.diamond_filename, "a") as logfile, self.db_lock:
                 for external in externals:
                     for internal in internals:
                         for vector in vectors:
