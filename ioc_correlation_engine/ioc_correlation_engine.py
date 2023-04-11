@@ -74,7 +74,8 @@ class IocCorrelationEngine():
         # Default warning lists
         #self.warninglists = WarningLists(slow_search=True)
         self.ioc_cache = []
-        self.cache_ttl = 600
+        self.ioc_cache_ttl = 600
+        self.diamond_cache_ttl = 86400
 
         # User configuration
         self.parsers = parsers_config
@@ -228,7 +229,6 @@ class IocCorrelationEngine():
                             rows = session.execute(select(ExternalVectorInternal).where(ExternalVectorInternal.external == external, ExternalVectorInternal.vector == vector, ExternalVectorInternal.internal == internal)).all()
                             if len(rows) == 0:
                                 session.add(ExternalVectorInternal(external = external, vector = vector, internal = internal))
-                                print("[diamond] (%s, %s, %s)" % (external, vector, internal), file=sys.stderr, flush=True)
                             #with open(self.diamond_filename, "a") as logfile, self.db_lock:
                             #    print("%s" % json.dumps({"ts": iocs['timestamp'], "external": external, "vector": vector, "internal": internal}), file=logfile, flush=True)
                 session.commit()
@@ -253,9 +253,11 @@ class IocCorrelationEngine():
                 for external in externals:
                     for internal in internals:
                         for vector in vectors:
-                            payload = {"ts": iocs['timestamp'], "external": external, "vector": vector, "internal": internal}
+                            payload = {"external": external, "vector": vector, "internal": internal}
                             if not self.diamond_cache_hit(payload):
-                                print("%s" % json.dumps({"ts": iocs['timestamp'], "external": external, "vector": vector, "internal": internal}), file=logfile, flush=True)
+                                payload["ts"] = iocs['timestamp']
+                                print("%s" % json.dumps(payload), file=logfile, flush=True)
+                                print("[diamond] (%s, %s, %s)" % (external, vector, internal), file=sys.stderr, flush=True)
         #else:
         #    print("[diamond] At least two instances are empty, skipping diamond", file=sys.stderr, flush=True)
         #time.sleep(5)
@@ -300,7 +302,8 @@ class IocCorrelationEngine():
         
         # this replaces the iocs_bonds logic with a better grounded hypothesis
         self.update_diamond(iocs)
-        #self.update_diamond_logs(iocs)
+
+        self.update_diamond_logs(iocs)
         # since the diamond model is a superset of iocs_bonds, we don't need these below
         #self.update_iocs_bonds([ioc['value'] for ioc in iocs['iocs']], entry['timestamp'])
         return iocs
@@ -355,7 +358,7 @@ class IocCorrelationEngine():
 
     def ioc_cache_hit(self, ioc):
         curtime = time.time()
-        self.ioc_cache = [value for value in self.ioc_cache if curtime - value['time'] < self.cache_ttl]
+        self.ioc_cache = [value for value in self.ioc_cache if curtime - value['time'] < self.ioc_cache_ttl]
         if ioc in (ioc['value'] for ioc in self.ioc_cache):
             #print("[ioc] Cache hit (%s)" % ioc, file=sys.stderr, flush=True)
             return True
@@ -367,7 +370,7 @@ class IocCorrelationEngine():
     def diamond_cache_hit(self, payload):
         payload_hash = str(hash(json.dumps(payload, sort_keys=True)))
         curtime = time.time()
-        self.diamond_cache = [value for value in self.diamond_cache if curtime - value['time'] < self.cache_ttl]
+        self.diamond_cache = [value for value in self.diamond_cache if curtime - value['time'] < self.diamond_cache_ttl]
         if payload_hash in (ioc['value'] for ioc in self.diamond_cache):
             #print("[ioc] Cache hit (%s)" % ioc, file=sys.stderr, flush=True)
             return True
